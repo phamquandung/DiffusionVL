@@ -13,6 +13,7 @@
 #   GRADIENT_CHECKPOINTING=True|False
 #   USE_FLASH_ATTN=1 → flash_attention_2 (requires flash-attn); else sdpa
 #   NAVIDA_MICRO_BS2=1 → bs=2 accum=4 (same global batch 32 on 4 GPUs; keep GC=True)
+#   MODEL_MAX_LENGTH=4096 (default below; faster and lower VRAM than 8192)
 #   REPORT_TO=none|wandb, WANDB_MODE=offline|online
 #
 set -euo pipefail
@@ -69,7 +70,7 @@ else
 fi
 LOGGING_STEPS="${LOGGING_STEPS:-100}"
 SAVE_STEPS="${SAVE_STEPS:-5000}"
-MODEL_MAX_LENGTH="${MODEL_MAX_LENGTH:-8192}"
+MODEL_MAX_LENGTH="${MODEL_MAX_LENGTH:-4096}"
 NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-1}"
 MAX_STEPS="${MAX_STEPS:--1}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
