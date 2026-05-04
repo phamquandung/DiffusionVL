@@ -26,9 +26,11 @@
 #   Default speed profile: bs=2 accum=4 gc=True -> global batch 32 on 4 GPUs; workers=12.
 #   Fallback if unstable/OOM: NAVIDA_MICRO_BS2=0 (bs=1 accum=8).
 #   FlashAttention is opt-in here (USE_FLASH_ATTN=1) because some stacks hit device-side assert.
+#   Optional profile override: BATCH_PROFILE=stable|bs3|bs4 (handled in finetune script)
 USE_THROUGHPUT_PRESET="${USE_THROUGHPUT_PRESET:-1}"
 if [ "${USE_THROUGHPUT_PRESET}" = "1" ]; then
   export NAVIDA_MICRO_BS2="${NAVIDA_MICRO_BS2:-1}"
+  export BATCH_PROFILE="${BATCH_PROFILE:-bs4}"
   export PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
   export GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-4}"
   export GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"

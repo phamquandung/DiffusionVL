@@ -11,6 +11,7 @@
 #   NAVIDA_JSONL, PRETRAINED_CHECKPOINT, OUTPUT_DIR, PRECISION=bf16|fp16
 #   PER_DEVICE_TRAIN_BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS, DATALOADER_NUM_WORKERS
 #   GRADIENT_CHECKPOINTING=True|False
+#   BATCH_PROFILE=stable|bs3|bs4 (stable=bs2/accum4, bs3=bs3/accum3, bs4=bs4/accum2)
 #   USE_FLASH_ATTN=1 → try flash_attention_2 (can be unstable on some stacks; default is 0 = sdpa)
 #   NAVIDA_MICRO_BS2=0 → fallback bs=1 accum=8 (default is bs=2 accum=4 for speed)
 #   MODEL_MAX_LENGTH=4096 (default below; faster and lower VRAM than 8192)
@@ -65,6 +66,22 @@ else
 fi
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-12}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"
+BATCH_PROFILE="${BATCH_PROFILE:-bs4}"
+case "${BATCH_PROFILE}" in
+  stable) : ;;
+  bs3)
+    PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-3}"
+    GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-3}"
+    ;;
+  bs4)
+    PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-4}"
+    GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"
+    ;;
+  *)
+    echo "ERROR: BATCH_PROFILE must be one of: stable, bs3, bs4 (got '${BATCH_PROFILE}')" >&2
+    exit 1
+    ;;
+esac
 USE_FLASH_ATTN="${USE_FLASH_ATTN:-0}"
 FLASH_ATTN_AVAILABLE="no"
 if python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('flash_attn') else 1)" >/dev/null 2>&1; then
@@ -131,7 +148,7 @@ echo "Checkpoint: ${PRETRAINED_CHECKPOINT}"
 echo "master_addr ${MASTER_ADDR}  master_port ${MASTER_PORT}  node_rank ${RANK}"
 echo "num_node ${num_node}  gpu_num ${gpu_num}  BD3LM_BLOCK_SIZE ${BD3LM_BLOCK_SIZE}"
 echo "BASE_RUN_NAME: ${custom_run_name}"
-echo "Throughput: per_device_bs=${PER_DEVICE_TRAIN_BATCH_SIZE} grad_accum=${GRADIENT_ACCUMULATION_STEPS} workers=${DATALOADER_NUM_WORKERS} gc=${GRADIENT_CHECKPOINTING} attn=${ATTN_IMPLEMENTATION}"
+echo "Throughput: profile=${BATCH_PROFILE} per_device_bs=${PER_DEVICE_TRAIN_BATCH_SIZE} grad_accum=${GRADIENT_ACCUMULATION_STEPS} workers=${DATALOADER_NUM_WORKERS} gc=${GRADIENT_CHECKPOINTING} attn=${ATTN_IMPLEMENTATION}"
 echo "Attention backend probe: flash_attn_available=${FLASH_ATTN_AVAILABLE} use_flash_attn=${USE_FLASH_ATTN}"
 if [ "${USE_FLASH_ATTN}" = "1" ] && [ "${FLASH_ATTN_AVAILABLE}" = "yes" ] && [ "${ATTN_IMPLEMENTATION}" = "flash_attention_2" ]; then
   echo "Warning: flash_attention_2 enabled; if you hit device-side assert, rerun with USE_FLASH_ATTN=0"
