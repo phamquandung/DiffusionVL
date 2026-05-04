@@ -47,7 +47,7 @@ export WANDB_MODE="${WANDB_MODE:-offline}"
 export WANDB_SILENT="${WANDB_SILENT:-true}"
 REPORT_TO="${REPORT_TO:-wandb}"
 
-PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-/mnt/data/vmo-ai-task/dungpq6/Qwen2.5-VL-7B-Instruct-DiffusionVL}"
+PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-/mnt/data/vmo-ai-task/dungpq6/Qwen2.5-VL-3B-Instruct-DiffusionVL}"
 NAVIDA_JSONL="${NAVIDA_JSONL:-/mnt/data/vmo-ai-task/dungpq6/navida/navida_train_data.jsonl}"
 NAVIDA_MAX_HISTORY_FRAMES="${NAVIDA_MAX_HISTORY_FRAMES:-8}"
 DATA_PATH="${NAVIDA_JSONL}"
