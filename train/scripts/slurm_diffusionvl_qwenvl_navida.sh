@@ -23,16 +23,16 @@
 #   TRAIN_ROOT=/home/dungpq6/Project/DiffusionVL/train
 #
 # Throughput preset (set USE_THROUGHPUT_PRESET=0 to skip and use finetune script defaults only):
-#   Default: bs=1 accum=8 gc=True → global batch 32 on 4 GPUs (stable; high workers×ranks thrashes CPU).
-#   Tune loaders: DATALOADER_NUM_WORKERS=12–16 only if GPUs idle waiting on batches.
-#   USE_FLASH_ATTN=1 before sbatch if flash-attn is installed in the container.
+#   Default: bs=1 accum=8 gc=True → global batch 32 on 4 GPUs; workers=12; OMP=1 (matches finetune_navida.sh).
+#   Finetune auto-uses flash_attention_2 if flash_attn is installed unless USE_FLASH_ATTN=0.
+#   NAVIDA_MICRO_BS2=1 before sbatch for bs=2 accum=4 (same global batch); OOM → unset.
 USE_THROUGHPUT_PRESET="${USE_THROUGHPUT_PRESET:-1}"
 if [ "${USE_THROUGHPUT_PRESET}" = "1" ]; then
   export PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
   export GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
   export GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"
-  export DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-8}"
-  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
+  export DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-12}"
+  export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
   export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
   export LOGGING_STEPS="${LOGGING_STEPS:-100}"
   export SAVE_STEPS="${SAVE_STEPS:-5000}"

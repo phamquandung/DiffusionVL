@@ -7,9 +7,11 @@
 #   bash train/scripts/diffusionvl_qwenvl_finetune_navida.sh
 #
 # Optional env overrides:
-#   DATALOADER_NUM_WORKERS=8         (default; raise gradually if GPU is starved, not first knob)
-#   OMP_NUM_THREADS=2                (default; raise only if CPU prep is clearly the bottleneck)
-#   USE_FLASH_ATTN=1                 (use flash_attention_2 if flash-attn is installed)
+#   DATALOADER_NUM_WORKERS=12        (default; raise slowly if GPU idle; too high → CPU thrash)
+#   OMP_NUM_THREADS=1                (default; avoids worker×thread oversubscription)
+#   USE_FLASH_ATTN=0                 (force sdpa; default is auto: flash_attention_2 if flash_attn imports)
+#   ATTN_IMPLEMENTATION=sdpa         (explicit attention backend; overrides auto flash)
+#   NAVIDA_MICRO_BS2=1               (bs=2 accum=4, same global batch 32 on 4 GPUs; OOM → unset)
 #   REPORT_TO=none|wandb|tensorboard   (default wandb; use none to skip wandb entirely)
 #   WANDB_MODE=offline|online          (default offline — local runs under WANDB_DIR, no sync prompt)
 #   NAVIDA_JSONL=/path/to/data.jsonl
@@ -22,9 +24,9 @@
 #   Effective batch on N GPUs ≈ N * PER_DEVICE_TRAIN_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS
 #   Default on 4 GPUs: 4 * 1 * 8 = 32 (VRAM-safe; bs=2+GC was ~3× slower in practice on this workload).
 #   DATALOADER_NUM_WORKERS: each *rank* spawns this many processes — e.g. 24×4 ranks = 96 loaders → CPU/I/O thrash.
-#       Start 4–8; try 12–16 only if GPUs wait on data (watch htop / nvitop). Do not set “high” blindly.
-#   Optional try (after profiling): PER_DEVICE_TRAIN_BATCH_SIZE=2 GRADIENT_ACCUMULATION_STEPS=4 (keep GC=True).
-#   USE_FLASH_ATTN=1 → flash_attention_2 (requires flash-attn); else sdpa.
+#       Rule of thumb: workers × num_ranks should stay well below logical CPUs.
+#   NAVIDA_MICRO_BS2=1 → micro-batch 2 + accum 4 (global batch 32 on 4 GPUs); keep GC=True; OOM if unlucky.
+#   Attention: auto picks flash_attention_2 when `import flash_attn` works (often faster on H100).
 #   MAX_STEPS=5000 for smoke runs
 #
 # Wall time: tqdm total steps ≈ dataset_size / (num_gpus * per_device_bs * grad_accum).
@@ -58,8 +60,8 @@ fi
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
-# Keep small: dataloader workers × ranks × OMP threads can oversubscribe CPU and slow every step.
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
+# Small OMP: each dataloader worker inherits this; workers × ranks × threads must not thrash the host.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export NCCL_IB_DISABLE=0
 export NCCL_IB_GID_INDEX=3
 export NCCL_SOCKET_IFNAME=eth0
@@ -86,15 +88,22 @@ IMAGE_FOLDER="."
 
 OUTPUT_DIR="${OUTPUT_DIR:-/mnt/data/vmo-ai-task/dungpq6/diffusionvl_qwenvl_navida}"
 
-# Training throughput defaults (override via env; conservative loaders — see header warning)
+# Training throughput defaults (override via env; see header)
 PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
-DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-8}"
+DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-12}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"
-if [ "${USE_FLASH_ATTN:-0}" = "1" ]; then
-  ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
+if [ "${NAVIDA_MICRO_BS2:-0}" = "1" ]; then
+  PER_DEVICE_TRAIN_BATCH_SIZE=2
+  GRADIENT_ACCUMULATION_STEPS=4
+fi
+# Attention: use explicit ATTN_IMPLEMENTATION if set; else flash when USE_FLASH_ATTN!=0 and flash_attn exists.
+if [ -n "${ATTN_IMPLEMENTATION:-}" ]; then
+  :
+elif [ "${USE_FLASH_ATTN:-1}" != "0" ] && python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('flash_attn') else 1)" 2>/dev/null; then
+  ATTN_IMPLEMENTATION=flash_attention_2
 else
-  ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
+  ATTN_IMPLEMENTATION=sdpa
 fi
 LOGGING_STEPS="${LOGGING_STEPS:-100}"
 SAVE_STEPS="${SAVE_STEPS:-5000}"
@@ -216,6 +225,7 @@ torchrun --nproc_per_node=${gpu_num} --nnodes=${num_node} --master_addr=${MASTER
     --model_max_length "${MODEL_MAX_LENGTH}" \
     --gradient_checkpointing "${GRADIENT_CHECKPOINTING}" \
     --dataloader_num_workers "${DATALOADER_NUM_WORKERS}" \
+    --dataloader_persistent_workers True \
     --lazy_preprocess True \
     --report_to "${REPORT_TO}" \
     --dataloader_drop_last True \
