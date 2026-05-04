@@ -22,13 +22,20 @@
 #   PRECISION=bf16|fp16
 #   TRAIN_ROOT=/home/dungpq6/Project/DiffusionVL/train
 #
-# Faster training (example — tune if OOM; GPUs already busy = raise samples/sec):
-#   export PER_DEVICE_TRAIN_BATCH_SIZE=2
-#   export GRADIENT_ACCUMULATION_STEPS=4
-#   export GRADIENT_CHECKPOINTING=False
-#   export DATALOADER_NUM_WORKERS=16
-#   export ATTN_IMPLEMENTATION=flash_attention_2   # if flash-attn is installed
-#   export LOGGING_STEPS=100 SAVE_STEPS=5000
+# Throughput preset (set USE_THROUGHPUT_PRESET=0 to skip and use finetune script defaults only):
+#   USE_THROUGHPUT_PRESET=1  (default) exports below unless you already exported overrides.
+# For another ~2x wall-time cut vs bs=1,gc=on, try after stable run:
+#   PER_DEVICE_TRAIN_BATCH_SIZE=4 GRADIENT_ACCUMULATION_STEPS=2 (same effective batch 32 on 4 GPUs)
+#   ATTN_IMPLEMENTATION=flash_attention_2  (if flash-attn is installed in the container)
+USE_THROUGHPUT_PRESET="${USE_THROUGHPUT_PRESET:-1}"
+if [ "${USE_THROUGHPUT_PRESET}" = "1" ]; then
+  export PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
+  export GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-4}"
+  export GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-False}"
+  export DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-16}"
+  export LOGGING_STEPS="${LOGGING_STEPS:-100}"
+  export SAVE_STEPS="${SAVE_STEPS:-5000}"
+fi
 # Log paths below are relative to your sbatch submission cwd unless you use absolute paths.
 
 set -euo pipefail
