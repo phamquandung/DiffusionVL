@@ -7,7 +7,9 @@
 #   bash train/scripts/diffusionvl_qwenvl_finetune_navida.sh
 #
 # Optional env overrides:
-#   USE_FLASH_ATTN=1                   (use flash_attention_2 if flash-attn is installed)
+#   DATALOADER_NUM_WORKERS=8         (default; raise gradually if GPU is starved, not first knob)
+#   OMP_NUM_THREADS=2                (default; raise only if CPU prep is clearly the bottleneck)
+#   USE_FLASH_ATTN=1                 (use flash_attention_2 if flash-attn is installed)
 #   REPORT_TO=none|wandb|tensorboard   (default wandb; use none to skip wandb entirely)
 #   WANDB_MODE=offline|online          (default offline — local runs under WANDB_DIR, no sync prompt)
 #   NAVIDA_JSONL=/path/to/data.jsonl
@@ -18,14 +20,15 @@
 #
 # Throughput / memory (defaults tuned for ~80GB H100 + NAVIDA + max_len 8192 + ZeRO-3):
 #   Effective batch on N GPUs ≈ N * PER_DEVICE_TRAIN_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS
-#   Default on 4 GPUs: 4 * 2 * 4 = 32 (same global batch as 4 * 1 * 8, often faster wall-clock than bs=1).
-#   If you OOM: PER_DEVICE_TRAIN_BATCH_SIZE=1 GRADIENT_ACCUMULATION_STEPS=8 GRADIENT_CHECKPOINTING=True
-#   More speed (risk OOM): GRADIENT_CHECKPOINTING=False only after bs=2+GC proves stable.
+#   Default on 4 GPUs: 4 * 1 * 8 = 32 (VRAM-safe; bs=2+GC was ~3× slower in practice on this workload).
+#   DATALOADER_NUM_WORKERS: each *rank* spawns this many processes — e.g. 24×4 ranks = 96 loaders → CPU/I/O thrash.
+#       Start 4–8; try 12–16 only if GPUs wait on data (watch htop / nvitop). Do not set “high” blindly.
+#   Optional try (after profiling): PER_DEVICE_TRAIN_BATCH_SIZE=2 GRADIENT_ACCUMULATION_STEPS=4 (keep GC=True).
 #   USE_FLASH_ATTN=1 → flash_attention_2 (requires flash-attn); else sdpa.
-#   DATALOADER_NUM_WORKERS=8–32   MAX_STEPS=5000 for smoke runs
+#   MAX_STEPS=5000 for smoke runs
 #
 # Wall time: tqdm total steps ≈ dataset_size / (num_gpus * per_device_bs * grad_accum).
-#   Same step count as before if global batch unchanged; each step can be faster with bs=2 + fewer accum passes.
+#   First ~50 steps can be noisy (compile/cache); compare s/it after that.
 #
 # If you see "CUDA initialization: The NVIDIA driver on your system is too old"
 # or DeepSpeed "Setting accelerator to CPU" and then "doesn't support bf16/gpu":
@@ -55,7 +58,8 @@ fi
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
-export OMP_NUM_THREADS=8
+# Keep small: dataloader workers × ranks × OMP threads can oversubscribe CPU and slow every step.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
 export NCCL_IB_DISABLE=0
 export NCCL_IB_GID_INDEX=3
 export NCCL_SOCKET_IFNAME=eth0
@@ -82,10 +86,10 @@ IMAGE_FOLDER="."
 
 OUTPUT_DIR="${OUTPUT_DIR:-/mnt/data/vmo-ai-task/dungpq6/diffusionvl_qwenvl_navida}"
 
-# Training throughput defaults (override via env; bs=2+accum=4+GC on targets speed without prior OOM mode)
-PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-4}"
-DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-24}"
+# Training throughput defaults (override via env; conservative loaders — see header warning)
+PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
+DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-8}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"
 if [ "${USE_FLASH_ATTN:-0}" = "1" ]; then
   ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"

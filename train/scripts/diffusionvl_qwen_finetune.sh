@@ -31,6 +31,21 @@ PRETRAIN_MM_ADAPTER="/path/to/pretrain_output/mm_projector.bin"
 DATA_PATH="/path/to/your/training_data.json"
 IMAGE_FOLDER="/path/to/your/images"
 
+# --- NAVIDA jsonl (LazyNavidaJsonlDataset) ---
+USE_NAVIDA="${USE_NAVIDA:-0}"
+NAVIDA_JSONL="${NAVIDA_JSONL:-/mnt/samsung/Project/CoRL-ICRA/navida_train_data_r2r.jsonl}"
+NAVIDA_MAX_HISTORY_FRAMES="${NAVIDA_MAX_HISTORY_FRAMES:-8}"
+if [ "${USE_NAVIDA}" = "1" ]; then
+    DATA_PATH="${NAVIDA_JSONL}"
+    IMAGE_FOLDER="."
+    EXTRA_NAVIDA_ARGS=(
+        --dataset_format navida_jsonl
+        --navida_max_history_frames "${NAVIDA_MAX_HISTORY_FRAMES}"
+    )
+else
+    EXTRA_NAVIDA_ARGS=()
+fi
+
 # Output directory
 # TODO: Set your output directory
 OUTPUT_DIR="./outputs/diffusionvl_qwen_finetune"
@@ -74,6 +89,7 @@ torchrun --nproc_per_node=${gpu_num} --nnodes=${num_node} --master_addr=${MASTER
     --version ${PROMPT_VERSION} \
     --data_path "${DATA_PATH}" \
     --image_folder "${IMAGE_FOLDER}" \
+    "${EXTRA_NAVIDA_ARGS[@]}" \
     --pretrain_mm_mlp_adapter="${PRETRAIN_MM_ADAPTER}" \
     --mm_tunable_parts="mm_vision_tower,mm_mlp_adapter,mm_language_model" \
     --mm_vision_tower_lr=2e-6 \
