@@ -2,8 +2,9 @@
 # Finetune DiffusionVL-QwenVL on NAVIDA-style JSONL (LazyNavidaJsonlDataset).
 # Model: diffusionvl_qwenvl (Qwen2.5-VL + BD3-LM)
 #
-# Run from DiffusionVL/train:
-#   bash scripts/diffusionvl_qwenvl_finetune_navida.sh <num_nodes> <gpus_per_node> [run_name] [bd3lm_block_size]
+# Run from DiffusionVL/train or repo root:
+#   bash scripts/diffusionvl_qwenvl_finetune_navida.sh [num_nodes] [gpus_per_node] [run_name] [bd3lm_block_size]
+#   bash train/scripts/diffusionvl_qwenvl_finetune_navida.sh
 #
 # Optional env overrides:
 #   NAVIDA_JSONL=/path/to/data.jsonl
@@ -12,14 +13,12 @@
 #   OUTPUT_DIR=./outputs/diffusionvl_qwenvl_navida
 #   PRECISION=bf16|fp16   (default bf16; use fp16 only if you must; H100 prefers bf16 once CUDA works)
 #
-# Throughput (defaults below match slurm_diffusionvl_qwenvl_navida.sh preset; override via env):
+# Throughput / memory (defaults are VRAM-safe on ~80GB H100 + NAVIDA + max_len 8192; override via env):
 #   Effective batch on N GPUs ≈ N * PER_DEVICE_TRAIN_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS
-#   (default 4 * 2 * 4 = 32 on 4 GPUs — same order as old bs=1 accum=8)
-#   PER_DEVICE_TRAIN_BATCH_SIZE=4 GRADIENT_ACCUMULATION_STEPS=2  (same effective 32 if VRAM allows)
-#   DATALOADER_NUM_WORKERS=8–24   (tune to CPU; Slurm often uses 16)
-#   GRADIENT_CHECKPOINTING=True   (slower, less VRAM if you OOM at bs=2)
-#   ATTN_IMPLEMENTATION=flash_attention_2  (if flash-attn installed; else sdpa)
-#   LOGGING_STEPS / SAVE_STEPS — raise to cut disk & eval-barrier overhead on long runs
+#   (default 4 * 1 * 8 = 32 on 4 GPUs)
+#   bs=2 + GRADIENT_CHECKPOINTING=False can OOM (~79GiB) with long multimodal sequences — raise batch only after a stable run.
+#   Faster if VRAM allows: PER_DEVICE_TRAIN_BATCH_SIZE=2 GRADIENT_ACCUMULATION_STEPS=4 GRADIENT_CHECKPOINTING=False
+#   DATALOADER_NUM_WORKERS=8–24   ATTN_IMPLEMENTATION=flash_attention_2  (if installed)
 #   MAX_STEPS=5000 NUM_TRAIN_EPOCHS=1      (cap steps for smoke runs)
 #
 # If you see "CUDA initialization: The NVIDIA driver on your system is too old"
@@ -31,6 +30,23 @@
 #   nvidia.com/gpu limits and the NVIDIA device plugin.
 
 set -euo pipefail
+
+# DiffusionVL/train (parent of scripts/) — absolute paths for torchrun / deepspeed.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_TRAIN_ROOT="$(cd "${_SCRIPT_DIR}/.." && pwd)"
+cd "${_TRAIN_ROOT}"
+export PYTHONPATH="${_TRAIN_ROOT}:${PYTHONPATH:-}"
+TRAIN_MEM_PY="${_TRAIN_ROOT}/llava/train/train_mem.py"
+DEEPSPEED_JSON="${_TRAIN_ROOT}/scripts/zero3.json"
+if [ ! -f "${TRAIN_MEM_PY}" ]; then
+  echo "ERROR: missing ${TRAIN_MEM_PY}" >&2
+  exit 1
+fi
+if [ ! -f "${DEEPSPEED_JSON}" ]; then
+  echo "ERROR: missing ${DEEPSPEED_JSON}" >&2
+  exit 1
+fi
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 export OMP_NUM_THREADS=8
 export NCCL_IB_DISABLE=0
@@ -47,18 +63,18 @@ export WANDB_PROJECT="${WANDB_PROJECT:-diffusionvl}"
 PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-/mnt/data/vmo-ai-task/dungpq6/Qwen2.5-VL-7B-Instruct-DiffusionVL}"
 
 # NAVIDA dataset (absolute image paths in jsonl are OK; --image_folder is a dummy)
-NAVIDA_JSONL="${NAVIDA_JSONL:-/mnt/data/vmo-ai-task/dungpq6/navida/navida_train_data_r2r.jsonl}"
+NAVIDA_JSONL="${NAVIDA_JSONL:-/mnt/data/vmo-ai-task/dungpq6/navida/navida_train_data.jsonl}"
 NAVIDA_MAX_HISTORY_FRAMES="${NAVIDA_MAX_HISTORY_FRAMES:-8}"
 DATA_PATH="${NAVIDA_JSONL}"
 IMAGE_FOLDER="."
 
 OUTPUT_DIR="${OUTPUT_DIR:-/mnt/data/vmo-ai-task/dungpq6/diffusionvl_qwenvl_navida}"
 
-# Training throughput defaults (override via env; tuned for ~80GB GPUs + NAVIDA jsonl)
-PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-4}"
+# Training throughput defaults (override via env; VRAM-safe for NAVIDA jsonl @ 8192 + ZeRO-3)
+PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-16}"
-GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-False}"
+GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
 LOGGING_STEPS="${LOGGING_STEPS:-100}"
 SAVE_STEPS="${SAVE_STEPS:-5000}"
@@ -67,8 +83,21 @@ NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-1}"
 MAX_STEPS="${MAX_STEPS:--1}"
 LEARNING_RATE="${LEARNING_RATE:-1e-5}"
 
-num_node=${1:?usage: num_nodes gpus_per_node [run_name] [bd3lm_block_size]}
-gpu_num=${2:?usage: num_nodes gpus_per_node [run_name] [bd3lm_block_size]}
+num_node="${1:-1}"
+if [ -n "${2:-}" ]; then
+  gpu_num="$2"
+elif [ -n "${NUM_GPUS:-}" ]; then
+  gpu_num="${NUM_GPUS}"
+elif command -v nvidia-smi >/dev/null 2>&1; then
+  gpu_num="$(nvidia-smi -L 2>/dev/null | wc -l)"
+  gpu_num="${gpu_num//[[:space:]]/}"
+else
+  gpu_num=1
+fi
+if ! [[ "${gpu_num}" =~ ^[0-9]+$ ]] || [ "${gpu_num}" -lt 1 ]; then
+  echo "ERROR: invalid gpus_per_node='${gpu_num}' (pass as 2nd arg or set NUM_GPUS)" >&2
+  exit 1
+fi
 custom_run_name=${3:-"diffusionvl_qwenvl_navida"}
 BD3LM_BLOCK_SIZE=${4:-8}
 
@@ -79,6 +108,7 @@ RANK=${RANK:-"0"}
 echo "=========================================="
 echo "DiffusionVL-QwenVL finetune on NAVIDA JSONL"
 echo "=========================================="
+echo "TRAIN_ROOT: ${_TRAIN_ROOT}  (cwd: $(pwd))"
 echo "NAVIDA_JSONL: ${NAVIDA_JSONL}"
 echo "NAVIDA_MAX_HISTORY_FRAMES: ${NAVIDA_MAX_HISTORY_FRAMES}"
 echo "Checkpoint: ${PRETRAINED_CHECKPOINT}"
@@ -125,8 +155,8 @@ for i in range(min(n, 4)):
 PY
 
 torchrun --nproc_per_node=${gpu_num} --nnodes=${num_node} --master_addr=${MASTER_ADDR} --master_port ${MASTER_PORT} --node_rank=${RANK} \
-    llava/train/train_mem.py \
-    --deepspeed scripts/zero3.json \
+    "${TRAIN_MEM_PY}" \
+    --deepspeed "${DEEPSPEED_JSON}" \
     --model_name_or_path ${LLM_VERSION} \
     --version ${PROMPT_VERSION} \
     --data_path "${DATA_PATH}" \
