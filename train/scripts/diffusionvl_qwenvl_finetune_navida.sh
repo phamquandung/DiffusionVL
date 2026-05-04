@@ -11,7 +11,7 @@
 #   NAVIDA_JSONL, PRETRAINED_CHECKPOINT, OUTPUT_DIR, PRECISION=bf16|fp16
 #   PER_DEVICE_TRAIN_BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS, DATALOADER_NUM_WORKERS
 #   GRADIENT_CHECKPOINTING=True|False
-#   USE_FLASH_ATTN=1 → flash_attention_2 (requires flash-attn); else sdpa
+#   USE_FLASH_ATTN=1 → try flash_attention_2 (auto-fallback to sdpa if flash-attn missing)
 #   NAVIDA_MICRO_BS2=0 → fallback bs=1 accum=8 (default is bs=2 accum=4 for speed)
 #   MODEL_MAX_LENGTH=4096 (default below; faster and lower VRAM than 8192)
 #   REPORT_TO=none|wandb, WANDB_MODE=offline|online
@@ -65,10 +65,13 @@ else
 fi
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-12}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"
-if [ "${USE_FLASH_ATTN:-0}" = "1" ]; then
-  ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
+USE_FLASH_ATTN="${USE_FLASH_ATTN:-1}"
+if [ -n "${ATTN_IMPLEMENTATION:-}" ]; then
+  :
+elif [ "${USE_FLASH_ATTN}" = "1" ] && python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('flash_attn') else 1)" >/dev/null 2>&1; then
+  ATTN_IMPLEMENTATION=flash_attention_2
 else
-  ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
+  ATTN_IMPLEMENTATION=sdpa
 fi
 LOGGING_STEPS="${LOGGING_STEPS:-100}"
 SAVE_STEPS="${SAVE_STEPS:-5000}"
