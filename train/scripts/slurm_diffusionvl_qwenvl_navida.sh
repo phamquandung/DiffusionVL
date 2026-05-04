@@ -21,6 +21,14 @@
 #   OUTPUT_DIR=/path/to/outputs
 #   PRECISION=bf16|fp16
 #   TRAIN_ROOT=/home/dungpq6/Project/DiffusionVL/train
+#
+# Faster training (example — tune if OOM; GPUs already busy = raise samples/sec):
+#   export PER_DEVICE_TRAIN_BATCH_SIZE=2
+#   export GRADIENT_ACCUMULATION_STEPS=4
+#   export GRADIENT_CHECKPOINTING=False
+#   export DATALOADER_NUM_WORKERS=16
+#   export ATTN_IMPLEMENTATION=flash_attention_2   # if flash-attn is installed
+#   export LOGGING_STEPS=100 SAVE_STEPS=5000
 # Log paths below are relative to your sbatch submission cwd unless you use absolute paths.
 
 set -euo pipefail
@@ -42,7 +50,7 @@ export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 
 # Model / data / output (defaults match typical server paths; override in sbatch env)
 export PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-/mnt/data/vmo-ai-task/dungpq6/Qwen2.5-VL-7B-Instruct-DiffusionVL}"
-export NAVIDA_JSONL="${NAVIDA_JSONL:-/mnt/data/vmo-ai-task/dungpq6/navida/navida_train_data_r2r.jsonl}"
+export NAVIDA_JSONL="${NAVIDA_JSONL:-/mnt/data/vmo-ai-task/dungpq6/navida/navida_train_data.jsonl}"
 export OUTPUT_DIR="${OUTPUT_DIR:-/mnt/data/vmo-ai-task/dungpq6/diffusionvl_qwenvl_navida}"
 export NAVIDA_MAX_HISTORY_FRAMES="${NAVIDA_MAX_HISTORY_FRAMES:-8}"
 export PRECISION="${PRECISION:-bf16}"
