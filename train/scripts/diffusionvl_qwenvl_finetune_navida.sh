@@ -10,6 +10,15 @@
 #   NAVIDA_MAX_HISTORY_FRAMES=8
 #   PRETRAINED_CHECKPOINT=/path/to/converted/checkpoint
 #   OUTPUT_DIR=./outputs/diffusionvl_qwenvl_navida
+#   PRECISION=bf16|fp16   (default bf16; use fp16 only if you must; H100 prefers bf16 once CUDA works)
+#
+# If you see "CUDA initialization: The NVIDIA driver on your system is too old"
+# or DeepSpeed "Setting accelerator to CPU" and then "doesn't support bf16/gpu":
+#   Your installed PyTorch was built for a newer CUDA than your driver exposes (or
+#   GPUs are not visible in this job). Fix by EITHER upgrading the host NVIDIA driver
+#   OR reinstalling PyTorch wheels that match `nvidia-smi` "CUDA Version" (see
+#   https://pytorch.org/get-started/locally/). In Kubernetes, also verify
+#   nvidia.com/gpu limits and the NVIDIA device plugin.
 
 set -euo pipefail
 
@@ -24,15 +33,15 @@ export WANDB_DIR="${WANDB_DIR:-./wandb}"
 export WANDB_PROJECT="${WANDB_PROJECT:-diffusionvl}"
 
 # TODO: path to Qwen2.5-VL checkpoint in DiffusionVL / converted format
-PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-/path/to/Qwen2.5-VL-7B-Instruct-Reformat}"
+PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-/mnt/data/vmo-ai-task/dungpq6/Qwen2.5-VL-7B-Instruct-DiffusionVL}"
 
 # NAVIDA dataset (absolute image paths in jsonl are OK; --image_folder is a dummy)
-NAVIDA_JSONL="${NAVIDA_JSONL:-/mnt/samsung/Project/CoRL-ICRA/navida_train_data_r2r.jsonl}"
+NAVIDA_JSONL="${NAVIDA_JSONL:-/mnt/data/vmo-ai-task/dungpq6/navida/navida_train_data_r2r.jsonl}"
 NAVIDA_MAX_HISTORY_FRAMES="${NAVIDA_MAX_HISTORY_FRAMES:-8}"
 DATA_PATH="${NAVIDA_JSONL}"
 IMAGE_FOLDER="."
 
-OUTPUT_DIR="${OUTPUT_DIR:-./outputs/diffusionvl_qwenvl_navida}"
+OUTPUT_DIR="${OUTPUT_DIR:-/mnt/data/vmo-ai-task/dungpq6/diffusionvl_qwenvl_navida}"
 
 num_node=${1:?usage: num_nodes gpus_per_node [run_name] [bd3lm_block_size]}
 gpu_num=${2:?usage: num_nodes gpus_per_node [run_name] [bd3lm_block_size]}
@@ -57,6 +66,38 @@ LLM_VERSION=${PRETRAINED_CHECKPOINT}
 VISION_MODEL_VERSION=${PRETRAINED_CHECKPOINT}
 PROMPT_VERSION=qwen_2_5
 
+PRECISION="${PRECISION:-bf16}"
+BF16_FLAG="False"
+FP16_FLAG="False"
+case "${PRECISION}" in
+  bf16) BF16_FLAG="True" ;;
+  fp16) FP16_FLAG="True" ;;
+  *)
+    echo "ERROR: PRECISION must be bf16 or fp16, got: ${PRECISION}"
+    exit 1
+    ;;
+esac
+
+echo "Precision: ${PRECISION} (bf16=${BF16_FLAG} fp16=${FP16_FLAG})"
+
+python - <<'PY'
+import sys
+try:
+    import torch
+except Exception as e:
+    print("ERROR: cannot import torch:", e)
+    sys.exit(1)
+if not torch.cuda.is_available():
+    print("ERROR: torch.cuda.is_available() is False — training will not see GPUs.")
+    print("  Fix: align PyTorch build with your NVIDIA driver (nvidia-smi 'CUDA Version')")
+    print("  or fix container/device plugin so GPUs are visible to this process.")
+    sys.exit(1)
+n = torch.cuda.device_count()
+print(f"OK: torch {torch.__version__}  cuda_runtime={torch.version.cuda}  gpu_count={n}")
+for i in range(min(n, 4)):
+    print("  ", i, torch.cuda.get_device_name(i))
+PY
+
 torchrun --nproc_per_node=${gpu_num} --nnodes=${num_node} --master_addr=${MASTER_ADDR} --master_port ${MASTER_PORT} --node_rank=${RANK} \
     llava/train/train_mem.py \
     --deepspeed scripts/zero3.json \
@@ -75,7 +116,8 @@ torchrun --nproc_per_node=${gpu_num} --nnodes=${num_node} --master_addr=${MASTER
     --mm_use_im_patch_token False \
     --group_by_modality_length True \
     --image_aspect_ratio pad \
-    --bf16 True \
+    --bf16 ${BF16_FLAG} \
+    --fp16 ${FP16_FLAG} \
     --run_name "${custom_run_name}" \
     --output_dir "${OUTPUT_DIR}/${custom_run_name}" \
     --num_train_epochs 1 \
