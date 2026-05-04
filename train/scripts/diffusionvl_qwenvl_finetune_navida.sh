@@ -11,7 +11,7 @@
 #   NAVIDA_JSONL, PRETRAINED_CHECKPOINT, OUTPUT_DIR, PRECISION=bf16|fp16
 #   PER_DEVICE_TRAIN_BATCH_SIZE, GRADIENT_ACCUMULATION_STEPS, DATALOADER_NUM_WORKERS
 #   GRADIENT_CHECKPOINTING=True|False
-#   USE_FLASH_ATTN=1 → try flash_attention_2 (auto-fallback to sdpa if flash-attn missing)
+#   USE_FLASH_ATTN=1 → try flash_attention_2 (can be unstable on some stacks; default is 0 = sdpa)
 #   NAVIDA_MICRO_BS2=0 → fallback bs=1 accum=8 (default is bs=2 accum=4 for speed)
 #   MODEL_MAX_LENGTH=4096 (default below; faster and lower VRAM than 8192)
 #   REPORT_TO=none|wandb, WANDB_MODE=offline|online
@@ -65,10 +65,14 @@ else
 fi
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-12}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"
-USE_FLASH_ATTN="${USE_FLASH_ATTN:-1}"
+USE_FLASH_ATTN="${USE_FLASH_ATTN:-0}"
+FLASH_ATTN_AVAILABLE="no"
+if python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('flash_attn') else 1)" >/dev/null 2>&1; then
+  FLASH_ATTN_AVAILABLE="yes"
+fi
 if [ -n "${ATTN_IMPLEMENTATION:-}" ]; then
   :
-elif [ "${USE_FLASH_ATTN}" = "1" ] && python3 -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('flash_attn') else 1)" >/dev/null 2>&1; then
+elif [ "${USE_FLASH_ATTN}" = "1" ] && [ "${FLASH_ATTN_AVAILABLE}" = "yes" ]; then
   ATTN_IMPLEMENTATION=flash_attention_2
 else
   ATTN_IMPLEMENTATION=sdpa
@@ -128,6 +132,10 @@ echo "master_addr ${MASTER_ADDR}  master_port ${MASTER_PORT}  node_rank ${RANK}"
 echo "num_node ${num_node}  gpu_num ${gpu_num}  BD3LM_BLOCK_SIZE ${BD3LM_BLOCK_SIZE}"
 echo "BASE_RUN_NAME: ${custom_run_name}"
 echo "Throughput: per_device_bs=${PER_DEVICE_TRAIN_BATCH_SIZE} grad_accum=${GRADIENT_ACCUMULATION_STEPS} workers=${DATALOADER_NUM_WORKERS} gc=${GRADIENT_CHECKPOINTING} attn=${ATTN_IMPLEMENTATION}"
+echo "Attention backend probe: flash_attn_available=${FLASH_ATTN_AVAILABLE} use_flash_attn=${USE_FLASH_ATTN}"
+if [ "${USE_FLASH_ATTN}" = "1" ] && [ "${FLASH_ATTN_AVAILABLE}" = "yes" ] && [ "${ATTN_IMPLEMENTATION}" = "flash_attention_2" ]; then
+  echo "Warning: flash_attention_2 enabled; if you hit device-side assert, rerun with USE_FLASH_ATTN=0"
+fi
 echo "Train scope: epochs=${NUM_TRAIN_EPOCHS} max_steps=${MAX_STEPS} max_len=${MODEL_MAX_LENGTH} lr=${LEARNING_RATE}"
 echo "Logging: REPORT_TO=${REPORT_TO} WANDB_MODE=${WANDB_MODE}"
 

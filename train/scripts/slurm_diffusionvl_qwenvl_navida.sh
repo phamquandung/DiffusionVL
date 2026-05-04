@@ -25,6 +25,7 @@
 # Throughput preset (set USE_THROUGHPUT_PRESET=0 to skip and use finetune script defaults only):
 #   Default speed profile: bs=2 accum=4 gc=True -> global batch 32 on 4 GPUs; workers=12.
 #   Fallback if unstable/OOM: NAVIDA_MICRO_BS2=0 (bs=1 accum=8).
+#   FlashAttention is opt-in here (USE_FLASH_ATTN=1) because some stacks hit device-side assert.
 USE_THROUGHPUT_PRESET="${USE_THROUGHPUT_PRESET:-1}"
 if [ "${USE_THROUGHPUT_PRESET}" = "1" ]; then
   export NAVIDA_MICRO_BS2="${NAVIDA_MICRO_BS2:-1}"
@@ -34,7 +35,7 @@ if [ "${USE_THROUGHPUT_PRESET}" = "1" ]; then
   export DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-12}"
   export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}"
   export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-  export USE_FLASH_ATTN="${USE_FLASH_ATTN:-1}"
+  export USE_FLASH_ATTN="${USE_FLASH_ATTN:-0}"
   export LOGGING_STEPS="${LOGGING_STEPS:-100}"
   export SAVE_STEPS="${SAVE_STEPS:-5000}"
 fi
