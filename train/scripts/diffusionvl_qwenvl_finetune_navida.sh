@@ -7,19 +7,25 @@
 #   bash train/scripts/diffusionvl_qwenvl_finetune_navida.sh
 #
 # Optional env overrides:
+#   USE_FLASH_ATTN=1                   (use flash_attention_2 if flash-attn is installed)
+#   REPORT_TO=none|wandb|tensorboard   (default wandb; use none to skip wandb entirely)
+#   WANDB_MODE=offline|online          (default offline — local runs under WANDB_DIR, no sync prompt)
 #   NAVIDA_JSONL=/path/to/data.jsonl
 #   NAVIDA_MAX_HISTORY_FRAMES=8
 #   PRETRAINED_CHECKPOINT=/path/to/converted/checkpoint
 #   OUTPUT_DIR=./outputs/diffusionvl_qwenvl_navida
 #   PRECISION=bf16|fp16   (default bf16; use fp16 only if you must; H100 prefers bf16 once CUDA works)
 #
-# Throughput / memory (defaults are VRAM-safe on ~80GB H100 + NAVIDA + max_len 8192; override via env):
+# Throughput / memory (defaults tuned for ~80GB H100 + NAVIDA + max_len 8192 + ZeRO-3):
 #   Effective batch on N GPUs ≈ N * PER_DEVICE_TRAIN_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS
-#   (default 4 * 1 * 8 = 32 on 4 GPUs)
-#   bs=2 + GRADIENT_CHECKPOINTING=False can OOM (~79GiB) with long multimodal sequences — raise batch only after a stable run.
-#   Faster if VRAM allows: PER_DEVICE_TRAIN_BATCH_SIZE=2 GRADIENT_ACCUMULATION_STEPS=4 GRADIENT_CHECKPOINTING=False
-#   DATALOADER_NUM_WORKERS=8–24   ATTN_IMPLEMENTATION=flash_attention_2  (if installed)
-#   MAX_STEPS=5000 NUM_TRAIN_EPOCHS=1      (cap steps for smoke runs)
+#   Default on 4 GPUs: 4 * 2 * 4 = 32 (same global batch as 4 * 1 * 8, often faster wall-clock than bs=1).
+#   If you OOM: PER_DEVICE_TRAIN_BATCH_SIZE=1 GRADIENT_ACCUMULATION_STEPS=8 GRADIENT_CHECKPOINTING=True
+#   More speed (risk OOM): GRADIENT_CHECKPOINTING=False only after bs=2+GC proves stable.
+#   USE_FLASH_ATTN=1 → flash_attention_2 (requires flash-attn); else sdpa.
+#   DATALOADER_NUM_WORKERS=8–32   MAX_STEPS=5000 for smoke runs
+#
+# Wall time: tqdm total steps ≈ dataset_size / (num_gpus * per_device_bs * grad_accum).
+#   Same step count as before if global batch unchanged; each step can be faster with bs=2 + fewer accum passes.
 #
 # If you see "CUDA initialization: The NVIDIA driver on your system is too old"
 # or DeepSpeed "Setting accelerator to CPU" and then "doesn't support bf16/gpu":
@@ -47,6 +53,7 @@ if [ ! -f "${DEEPSPEED_JSON}" ]; then
   exit 1
 fi
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
 
 export OMP_NUM_THREADS=8
 export NCCL_IB_DISABLE=0
@@ -58,6 +65,11 @@ export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 
 export WANDB_DIR="${WANDB_DIR:-./wandb}"
 export WANDB_PROJECT="${WANDB_PROJECT:-diffusionvl}"
+# Non-interactive runs (Slurm / no TTY): avoid wandb "Create account / ..." prompt blocking training.
+export WANDB_MODE="${WANDB_MODE:-offline}"
+export WANDB_SILENT="${WANDB_SILENT:-true}"
+# Hugging Face / wandb pick up WANDB_* before Trainer starts.
+REPORT_TO="${REPORT_TO:-wandb}"
 
 # TODO: path to Qwen2.5-VL checkpoint in DiffusionVL / converted format
 PRETRAINED_CHECKPOINT="${PRETRAINED_CHECKPOINT:-/mnt/data/vmo-ai-task/dungpq6/Qwen2.5-VL-7B-Instruct-DiffusionVL}"
@@ -70,12 +82,16 @@ IMAGE_FOLDER="."
 
 OUTPUT_DIR="${OUTPUT_DIR:-/mnt/data/vmo-ai-task/dungpq6/diffusionvl_qwenvl_navida}"
 
-# Training throughput defaults (override via env; VRAM-safe for NAVIDA jsonl @ 8192 + ZeRO-3)
-PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
-DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-16}"
+# Training throughput defaults (override via env; bs=2+accum=4+GC on targets speed without prior OOM mode)
+PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-4}"
+DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-24}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-True}"
-ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
+if [ "${USE_FLASH_ATTN:-0}" = "1" ]; then
+  ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
+else
+  ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-sdpa}"
+fi
 LOGGING_STEPS="${LOGGING_STEPS:-100}"
 SAVE_STEPS="${SAVE_STEPS:-5000}"
 MODEL_MAX_LENGTH="${MODEL_MAX_LENGTH:-8192}"
@@ -117,6 +133,7 @@ echo "num_node ${num_node}  gpu_num ${gpu_num}  BD3LM_BLOCK_SIZE ${BD3LM_BLOCK_S
 echo "BASE_RUN_NAME: ${custom_run_name}"
 echo "Throughput: per_device_bs=${PER_DEVICE_TRAIN_BATCH_SIZE} grad_accum=${GRADIENT_ACCUMULATION_STEPS} workers=${DATALOADER_NUM_WORKERS} gc=${GRADIENT_CHECKPOINTING} attn=${ATTN_IMPLEMENTATION}"
 echo "Train scope: epochs=${NUM_TRAIN_EPOCHS} max_steps=${MAX_STEPS} max_len=${MODEL_MAX_LENGTH} lr=${LEARNING_RATE}"
+echo "Logging: REPORT_TO=${REPORT_TO} WANDB_MODE=${WANDB_MODE}"
 
 LLM_VERSION=${PRETRAINED_CHECKPOINT}
 VISION_MODEL_VERSION=${PRETRAINED_CHECKPOINT}
@@ -196,7 +213,7 @@ torchrun --nproc_per_node=${gpu_num} --nnodes=${num_node} --master_addr=${MASTER
     --gradient_checkpointing "${GRADIENT_CHECKPOINTING}" \
     --dataloader_num_workers "${DATALOADER_NUM_WORKERS}" \
     --lazy_preprocess True \
-    --report_to wandb \
+    --report_to "${REPORT_TO}" \
     --dataloader_drop_last True \
     --attn_implementation "${ATTN_IMPLEMENTATION}" \
     --use_conversation_mask False \
